@@ -1,0 +1,23 @@
+{
+  "id": "gen2_cheat_menu_gold",
+  "name": "Gen2 Gold Cheat Menu",
+  "version": "2.0.0",
+  "api": 2,
+  "entry": "main.lua",
+  "profile": "content",
+  "category": "TOOL",
+  "game_version": ">=0.0.0-0 <2.0.0",
+  "games": [
+    "gold"
+  ],
+  "permissions": [
+    "engine_internals"
+  ],
+  "affects_link": true,
+  "priority": 100,
+  "dependencies": [],
+  "optional_dependencies": [],
+  "conflicts": [],
+  "github": "randyadr/Gen2-Cheat-Menu",
+  "description": "Pokemon Gold / Gen2 engine-level cheat menu. Uses Gold's live save, Mon, Boxes, Evolution, World, battle hooks, and movement hooks rather than Gen1-only command or text shims."
+}

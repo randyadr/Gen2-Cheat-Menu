@@ -1,0 +1,61 @@
+name: Build mod release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build release ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(python3 - <<'PY2'
+          import json
+          print(json.load(open("manifest.json", encoding="utf-8"))["version"])
+          PY2
+          )
+          TAG="${GITHUB_REF_NAME#v}"
+          if [ "$TAG" != "$VERSION" ]; then
+            echo "Tag version $TAG does not match manifest version $VERSION" >&2
+            exit 1
+          fi
+          MOD_ID=$(python3 - <<'PY2'
+          import json
+          print(json.load(open("manifest.json", encoding="utf-8"))["id"])
+          PY2
+          )
+          rm -rf dist "$MOD_ID"
+          mkdir -p dist "$MOD_ID"
+          cp manifest.json main.lua mod.card README.md CHANGELOG.md "$MOD_ID"/
+          if [ -d tests ]; then cp -R tests "$MOD_ID"/; fi
+          (cd . && zip -r "dist/${MOD_ID}-${VERSION}.zip" "$MOD_ID")
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(python3 - <<'PY2'
+          import json
+          print(json.load(open("manifest.json", encoding="utf-8"))["version"])
+          PY2
+          )
+          MOD_ID=$(python3 - <<'PY2'
+          import json
+          print(json.load(open("manifest.json", encoding="utf-8"))["id"])
+          PY2
+          )
+          gh release create "$GITHUB_REF_NAME" "dist/${MOD_ID}-${VERSION}.zip" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file CHANGELOG.md

@@ -1,0 +1,37 @@
+return {
+  summary = "Gold/Gen2 engine-level cheat menu backed by Game2 save state, Gen2 Pokemon/box/evolution code, World warps, and shared runtime hooks.",
+  author = "ChatGPT / OpenAI",
+  contact = "https://github.com/randyadr/Gen2-Cheat-Menu",
+  tags = { "ui", "tool", "cheats", "gen2", "gold", "pokemon", "battle", "quality-of-life" },
+  differences = {
+    changed = {
+      "targets Pokemon Gold explicitly and will not be mistaken for a Gen1-only mod",
+      "money writes save.player.money, the field Gold's trainer card and economy read",
+      "badges write Gold's Johto and Kanto badge stores instead of fake badge inventory items",
+      "Pokedex completion writes seen/caught, the actual Gold Pokedex stores",
+      "Pokemon creation uses src.battle.gen2.Mon.new and Mon.stampOT",
+      "PC Pokemon use Gold's 14 boxes of 20",
+      "forced evolution uses src.core.gen2.Evolution.apply and markPokedex",
+      "teleports use the live Gold World warpToSpawn/flyTo paths",
+      "item quantities write Gold's live flat inventory; PackMenu assigns pockets from item attributes",
+      "walk-through-walls resolves the persistent game.world player used by Gold",
+    },
+    added = {
+      "Gold fly-point teleport browser generated from FieldMoves.FLYPOINTS",
+      "all Johto and Kanto badges in one engine-level action",
+      "all registered Gold Poke Ball pocket items in the ALL BALLS action",
+      "Sun Stone in the evolution-stone item group",
+    },
+    known = {
+      "runtime battle/movement toggles reset after a fresh launch",
+      "forced evolution is instant from the cheat menu; the resulting Pokemon record is built by Gold's evolution engine",
+      "Safari refill and the old Gen1 flashLit shortcut were removed because Gold does not consume those Gen1 state fields",
+      "persistent save mutations are written when the game is saved normally",
+      "battle cheats are intended for single-player use and the manifest marks the mod as link-affecting",
+    },
+  },
+  credits = {
+    { who = "bryanthaboi/gen1recomp", for_ = "the Gold Game2 engine, Gen2 save/Mon/Boxes/Evolution/World implementations, native mod UI, and shared runtime hook API" },
+  },
+  compat = { engine = ">=0.0.0-0 <2.0.0", modApi = 2, games = { "gold" } },
+}
