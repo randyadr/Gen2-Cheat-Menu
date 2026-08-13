@@ -228,8 +228,18 @@ return function(mod)
   end
 
   local function itemDisplayName(id, def)
-    local name = def and (def.name or def.label) or id
+    local name = type(def) == "table" and (def.name or def.label) or nil
     return tostring(name or id):gsub("_", " ")
+  end
+
+  local function isRealItemRecord(id, def)
+    -- Gold's data.items table also carries metadata keys such as generation,
+    -- source and pockets. Registry:each() exposes those base keys too, so an
+    -- item picker must only treat actual extracted item records as items.
+    return type(id) == "string"
+      and type(def) == "table"
+      and type(def.id) == "string"
+      and def.id == id
   end
 
   local function speciesName(game, id)
@@ -712,7 +722,7 @@ return function(mod)
     new = function(game)
       local rows = {}
       for id, def in mod.content.items:each() do
-        if not isBadge(id) then
+        if isRealItemRecord(id, def) and not isBadge(id) then
           rows[#rows + 1] = {
             label = itemDisplayName(id, def),
             right = itemStatus(game, id),

@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.0.1 - ANY ITEM crash fix
+
+- Fixed the Gold `ANY ITEM` picker crashing while building its list.
+- Gold's `data.items` table contains metadata keys (`generation`, `source`, and `pockets`) beside real item records; the picker now filters strictly to records whose `def.id` matches the registry id.
+- Hardened item-name rendering so non-item registry values can never be indexed as item tables.
+- Added a regression test that includes the real Gold metadata shape and opens the `ANY ITEM` screen.
+
+
 ## 2.0.0 - Gold / Gen2 engine port
 
 - Target Pokemon Gold explicitly with `games: ["gold"]`.

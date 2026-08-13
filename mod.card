@@ -33,5 +33,5 @@ return {
   credits = {
     { who = "bryanthaboi/gen1recomp", for_ = "the Gold Game2 engine, Gen2 save/Mon/Boxes/Evolution/World implementations, native mod UI, and shared runtime hook API" },
   },
-  compat = { engine = ">=0.0.0-0 <2.0.0", modApi = 2, games = { "gold" } },
+  compat = { engine = ">=0.0.0-0 <2.0.1", modApi = 2, games = { "gold" } },
 }

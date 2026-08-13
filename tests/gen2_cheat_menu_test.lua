@@ -92,10 +92,14 @@ local mod = {
   content = {
     constants = Registry.new({ moneyCap = 999999 }),
     items = Registry.new({
-      RARE_CANDY = { name = "RARE CANDY", pocket = "ITEM" },
-      MASTER_BALL = { name = "MASTER BALL", pocket = "BALL" },
-      POKE_BALL = { name = "POKE BALL", pocket = "BALL" },
-      SUN_STONE = { name = "SUN STONE", pocket = "ITEM" },
+      -- Gold's extracted item table carries metadata beside item records.
+      generation = 2,
+      source = "ROM:ItemNames + ItemAttributes",
+      pockets = { "ITEM", "KEY_ITEM", "BALL", "TM_HM" },
+      RARE_CANDY = { id = "RARE_CANDY", name = "RARE CANDY", pocket = "ITEM" },
+      MASTER_BALL = { id = "MASTER_BALL", name = "MASTER BALL", pocket = "BALL" },
+      POKE_BALL = { id = "POKE_BALL", name = "POKE BALL", pocket = "BALL" },
+      SUN_STONE = { id = "SUN_STONE", name = "SUN STONE", pocket = "ITEM" },
     }),
     moves = Registry.new({ TACKLE = { pp = 35 } }),
     pokemon = Registry.new({
@@ -166,6 +170,17 @@ eq(game.save.pokedex.owned, nil, "must not create Gen1 pokedex.owned")
 ok = mod.exports.setItemCount(game, "RARE_CANDY", 42)
 check(ok, "rare candy failed")
 eq(game.save.inventory.RARE_CANDY, 42, "Gold live inventory")
+
+-- Regression: Gold item metadata must never be treated as item definitions.
+local pickerFactory = screens:get("Gen2CheatItemPicker")
+check(type(pickerFactory) == "table" and type(pickerFactory.new) == "function", "item picker screen missing")
+local picker = pickerFactory.new(game)
+eq(picker.title, "ANY ITEM", "item picker title")
+eq(#picker.rows, 4, "item picker filters Gold metadata")
+for _, row in ipairs(picker.rows) do
+  check(row.value ~= "generation" and row.value ~= "source" and row.value ~= "pockets",
+    "metadata leaked into item picker")
+end
 
 -- Gold Mon builder + OT + party.
 local added, where, mon = mod.exports.addPokemonToParty(game, "CHIKORITA", 12)
