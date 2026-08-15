@@ -6,8 +6,8 @@ The mod manifest already points to `randyadr/Gen2-Cheat-Menu`.
 
 For the first auto-update-compatible release:
 
-1. Ensure `manifest.json` says version `2.0.1`.
-2. Create/push tag `v2.0.1`.
-3. `.github/workflows/release.yml` will create a GitHub Release and upload `gen2_cheat_menu_gold-2.0.1.zip`.
+1. Ensure `manifest.json` says version `2.0.3`.
+2. Create/push tag `v2.0.3`.
+3. `.github/workflows/release.yml` will create a GitHub Release and upload `gen2_cheat_menu_gold-2.0.3.zip`.
 
 For later updates, increment `manifest.json`, commit, then push a matching `v<version>` tag.

@@ -1,5 +1,25 @@
 # Changelog
 
+## 2.0.3 - Native evolution animation
+
+- FORCE EVOLVE now pushes Gold's built-in `Gen2EvolutionAnim` screen instead of changing the species immediately.
+- The animation receives the live party/PC container and slot, then commits through Gold's own `Evolution.apply` path at the native animation commit frame.
+- Cheat-triggered evolutions use `force = true`, so the animation cannot be canceled with B.
+- Evolution-time move learning and Pokedex seen/caught updates now follow the same screen path as normal Gold evolution.
+- PC-box Pokemon are resolved to their exact live box/index before the animation opens.
+
+## 2.0.2 - Custom GameShark codes
+
+- Added a **GAMESHARK** category with a persistent custom-code manager.
+- Added an in-game 8-digit hex editor for standard GB/C GameShark write codes in `01VVLLHH` form.
+- Added enable/disable, apply-once, and delete controls for every saved code.
+- Enabled codes are re-applied every fixed `input.step` tick to emulate continuous GameShark writes.
+- Added live Pokemon Gold WRAM bridges for player money, Mom's saved money, coins, Johto/Kanto badge bytes, TM/HM quantities, ITEM/KEY ITEM/BALL slots and quantities, and Pokedex seen/caught bitfields.
+- Added a sparse-WRAM fallback through Gold's script VM for other WRAM/HRAM addresses, so `readmem`/`writemem`-style script memory can observe custom writes.
+- Added a public `registerGameSharkBridge(address, handler)` export so future engine-level mappings can be extended without replacing the parser/manager.
+- Added regression coverage for parsing, BCD money/coins, badges, balls, TM/HM, Pokedex, VM WRAM fallback, persistence, enable/disable/delete, and per-tick reapplication.
+- Because Gen1Recomp is a high-level reimplementation rather than a Game Boy emulator, codes aimed at hardware/CPU state or engine variables with no high-level equivalent may show as VM WRAM or UNSUPPORTED instead of pretending to affect gameplay.
+
 ## 2.0.1 - ANY ITEM crash fix
 
 - Fixed the Gold `ANY ITEM` picker crashing while building its list.

@@ -96,16 +96,18 @@ local mod = {
       generation = 2,
       source = "ROM:ItemNames + ItemAttributes",
       pockets = { "ITEM", "KEY_ITEM", "BALL", "TM_HM" },
-      RARE_CANDY = { id = "RARE_CANDY", name = "RARE CANDY", pocket = "ITEM" },
-      MASTER_BALL = { id = "MASTER_BALL", name = "MASTER BALL", pocket = "BALL" },
-      POKE_BALL = { id = "POKE_BALL", name = "POKE BALL", pocket = "BALL" },
-      SUN_STONE = { id = "SUN_STONE", name = "SUN STONE", pocket = "ITEM" },
+      RARE_CANDY = { id = "RARE_CANDY", name = "RARE CANDY", pocket = "ITEM", index = 0x20 },
+      MASTER_BALL = { id = "MASTER_BALL", name = "MASTER BALL", pocket = "BALL", index = 0x01 },
+      POKE_BALL = { id = "POKE_BALL", name = "POKE BALL", pocket = "BALL", index = 0x02 },
+      SUN_STONE = { id = "SUN_STONE", name = "SUN STONE", pocket = "ITEM", index = 0xA9 },
+      TM01 = { id = "TM01", name = "TM01", pocket = "TM_HM", index = 0xBF, tmNumber = 1 },
+      HM01 = { id = "HM01", name = "HM01", pocket = "TM_HM", index = 0xF3, tmNumber = 1 },
     }),
     moves = Registry.new({ TACKLE = { pp = 35 } }),
     pokemon = Registry.new({
-      CHIKORITA = { name = "CHIKORITA", evolutions = { { method = "EVOLVE_LEVEL", level = 16, into = "BAYLEEF" } } },
-      BAYLEEF = { name = "BAYLEEF", evolutions = {} },
-      CYNDAQUIL = { name = "CYNDAQUIL", evolutions = {} },
+      CHIKORITA = { name = "CHIKORITA", index = 152, evolutions = { { method = "EVOLVE_LEVEL", level = 16, into = "BAYLEEF" } } },
+      BAYLEEF = { name = "BAYLEEF", index = 153, evolutions = {} },
+      CYNDAQUIL = { name = "CYNDAQUIL", index = 155, evolutions = {} },
     }),
     screens = screens,
   },
@@ -113,9 +115,21 @@ local mod = {
     wrap = function(_, name, fn, priority) hooks[name] = fn end,
   },
   ui = {
-    push = function(game, id, ...) pushed[#pushed + 1] = id; return true end,
+    push = function(game, id, ...)
+      pushed[#pushed + 1] = { id = id, args = { ... } }
+      return true
+    end,
     ListMenu = { new = function(game, title, rows, opts) return { title = title, rows = rows, opts = opts } end },
     QuantityBox = { new = function(game, opts) return { opts = opts } end },
+  },
+  save = {
+    data = {},
+    get = function(self, key, default)
+      local value = self.data[key]
+      if value == nil then return default end
+      return value
+    end,
+    set = function(self, key, value) self.data[key] = value end,
   },
 }
 
@@ -131,11 +145,12 @@ local world = {
   } },
   healWarps = 0,
   flySpawns = {},
+  vm = { mem = {} },
   warpToSpawn = function(self) self.healWarps = self.healWarps + 1 end,
   flyTo = function(self, spawn) self.flySpawns[#self.flySpawns + 1] = spawn; return true end,
 }
 local game = {
-  data = { pokemon = mod.content.pokemon.data, moves = mod.content.moves.data },
+  data = { pokemon = mod.content.pokemon.data, moves = mod.content.moves.data, items = mod.content.items.data },
   save = {
     version = "gold", generation = 2,
     player = { name = "GOLD", id = 12345, money = 3000, badges = {}, kantoBadges = {} },
@@ -143,7 +158,10 @@ local game = {
     pokedex = { seen = {}, caught = {} },
   },
   world = world,
-  stack = { clear = function(self) self.cleared = true end },
+  stack = {
+    clear = function(self) self.cleared = true end,
+    pop = function(self) self.popped = (self.popped or 0) + 1 end,
+  },
 }
 
 -- Engine-level save fields.
@@ -176,11 +194,78 @@ local pickerFactory = screens:get("Gen2CheatItemPicker")
 check(type(pickerFactory) == "table" and type(pickerFactory.new) == "function", "item picker screen missing")
 local picker = pickerFactory.new(game)
 eq(picker.title, "ANY ITEM", "item picker title")
-eq(#picker.rows, 4, "item picker filters Gold metadata")
+eq(#picker.rows, 6, "item picker filters Gold metadata")
 for _, row in ipairs(picker.rows) do
   check(row.value ~= "generation" and row.value ~= "source" and row.value ~= "pockets",
     "metadata leaked into item picker")
 end
+
+-- Custom GameShark compatibility: standard 01VVLLHH parsing and live bridges.
+local parsed, parseErr = mod.exports.parseGameSharkCode("01 99 73 D5")
+check(parsed, parseErr)
+eq(parsed.address, 0xD573, "GameShark reversed address")
+eq(parsed.value, 0x99, "GameShark value")
+local bad = mod.exports.parseGameSharkCode("02AA00C1")
+eq(bad, nil, "unsupported GameShark code type rejected")
+
+-- Money is packed BCD across D573-D575.
+game.save.player.money = 0
+check(mod.exports.applyGameSharkCode(game, "019973D5"), "money byte 1")
+check(mod.exports.applyGameSharkCode(game, "019974D5"), "money byte 2")
+check(mod.exports.applyGameSharkCode(game, "019975D5"), "money byte 3")
+eq(game.save.player.money, 999999, "GameShark live money bridge")
+
+-- Coins are two packed BCD bytes at D57A-D57B.
+game.save.player.coins = 0
+check(mod.exports.applyGameSharkCode(game, "01997AD5"), "coins byte 1")
+check(mod.exports.applyGameSharkCode(game, "01997BD5"), "coins byte 2")
+eq(game.save.player.coins, 9999, "GameShark live coins bridge")
+
+-- Badge bytes map bit-for-bit to Gold's real badge stores.
+check(mod.exports.applyGameSharkCode(game, "01FF7CD5"), "Johto badge byte")
+check(mod.exports.applyGameSharkCode(game, "01FF7DD5"), "Kanto badge byte")
+eq(game.save.player.badges.ZEPHYR, true, "GameShark Johto badges")
+eq(game.save.player.kantoBadges.EARTH, true, "GameShark Kanto badges")
+
+-- Ball slot/quantity pair: wBalls slot 1 at D5FD/D5FE. Item index 02 = POKE BALL in the test cache.
+game.save.inventory.POKE_BALL = nil
+game.save.bagOrder = {}
+check(mod.exports.applyGameSharkCode(game, "0102FDD5"), "ball slot write")
+check(mod.exports.applyGameSharkCode(game, "0163FED5"), "ball quantity write")
+eq(game.save.inventory.POKE_BALL, 99, "GameShark live ball bridge")
+
+-- TM01 quantity lives at the first byte of wTMsHMs.
+check(mod.exports.applyGameSharkCode(game, "01637ED5"), "TM01 write")
+eq(game.save.inventory.TM01, 99, "GameShark TM/HM bridge")
+
+-- Chikorita is dex #152: byte 18, bit 7 => DBF6 value 80.
+game.save.pokedex.caught.CHIKORITA = nil
+check(mod.exports.applyGameSharkCode(game, "0180F6DB"), "dex caught byte")
+eq(game.save.pokedex.caught.CHIKORITA, true, "GameShark dex bridge")
+
+-- Unclaimed WRAM still lands in Gold's sparse VM memory, matching readmem/writemem semantics.
+check(mod.exports.applyGameSharkCode(game, "01AA00C1"), "VM WRAM write")
+eq(world.vm.mem[0xC100], 0xAA, "GameShark VM memory fallback")
+
+-- Saved code list survives through mod.save and input.step re-applies enabled codes each fixed tick.
+mod.save.data.gamesharkCodes = {}
+check(mod.exports.addGameSharkCode("01017CD5", true), "add persistent GameShark code")
+eq(#mod.exports.listGameSharkCodes(), 1, "GameShark code persisted")
+game.save.player.badges.ZEPHYR = false
+hooks["input.step"](function() return "tick" end, game, 1 / 60)
+eq(game.save.player.badges.ZEPHYR, true, "enabled GameShark code reapplied per tick")
+check(mod.exports.setGameSharkEnabled(1, false), "disable GameShark code")
+game.save.player.badges.ZEPHYR = false
+hooks["input.step"](function() end, game, 1 / 60)
+eq(game.save.player.badges.ZEPHYR, false, "disabled GameShark code stays off")
+check(mod.exports.deleteGameSharkCode(1), "delete GameShark code")
+eq(#mod.exports.listGameSharkCodes(), 0, "GameShark code deleted")
+
+local gsFactory = screens:get("Gen2CheatGameShark")
+check(type(gsFactory) == "table" and type(gsFactory.new) == "function", "GameShark manager screen missing")
+local gsMenu = gsFactory.new(game)
+eq(gsMenu.title, "GAMESHARK CODES", "GameShark manager title")
+eq(gsMenu.rows[1].label, "ADD CODE", "GameShark add-code row")
 
 -- Gold Mon builder + OT + party.
 local added, where, mon = mod.exports.addPokemonToParty(game, "CHIKORITA", 12)
@@ -197,8 +282,45 @@ check(added, "PC add failed")
 eq(where, "BOX 14", "Gold box 14")
 eq(game.save.boxes[14][1].species, "CYNDAQUIL", "box 14 mon")
 
--- Instant force evolve still goes through the Gen2 Evolution module and mutates live record.
+-- Visible FORCE EVOLVE must open Gold's native Gen2EvolutionAnim screen first.
 local original = game.save.party[1]
+local targetFactory = screens:get("Gen2CheatEvolutionTarget")
+check(type(targetFactory) == "table" and type(targetFactory.new) == "function",
+  "evolution target screen missing")
+local targetMenu = targetFactory.new(game, original)
+check(targetMenu.rows[1] ~= nil, "evolution target row missing")
+local beforePush = #pushed
+targetMenu.opts.onChoose(targetMenu.rows[1])
+eq(#pushed, beforePush + 1, "evolution should push one native screen")
+local evoPush = pushed[#pushed]
+eq(evoPush.id, "Gen2EvolutionAnim", "must push Gold native evolution animation")
+local evoOpts = evoPush.args[1]
+eq(evoOpts.mon, original, "animation mon")
+eq(evoOpts.entry.into, "BAYLEEF", "animation evolution entry")
+eq(evoOpts.party, game.save.party, "animation live party container")
+eq(evoOpts.index, 1, "animation party index")
+eq(evoOpts.save, game.save, "animation save")
+eq(evoOpts.force, true, "cheat evolution must be non-cancelable")
+eq(original.species, "CHIKORITA", "menu must not evolve before animation commit")
+check(type(evoOpts.onDone) == "function", "animation completion callback")
+
+-- PC-box force evolve must give the native animation the exact live box slot.
+local pcAdded, pcWhere, pcMon = mod.exports.addPokemonToPC(game, "CHIKORITA", 10)
+check(pcAdded, "PC evolution test add failed")
+eq(pcWhere, "BOX 14", "PC evolution test destination")
+local pcBeforePush = #pushed
+ok = mod.exports.startEvolutionAnimation(game, pcMon,
+  { method = "EVOLVE_LEVEL", level = 16, into = "BAYLEEF" })
+check(ok, "PC evolution animation failed to start")
+eq(#pushed, pcBeforePush + 1, "PC evolution should push native screen")
+local pcEvoOpts = pushed[#pushed].args[1]
+eq(pushed[#pushed].id, "Gen2EvolutionAnim", "PC must push native evolution animation")
+eq(pcEvoOpts.party, game.save.boxes[14], "animation live PC box container")
+eq(pcEvoOpts.index, 2, "animation PC box index")
+eq(pcEvoOpts.mon, pcMon, "animation PC mon")
+eq(pcMon.species, "CHIKORITA", "PC mon must wait for animation commit")
+
+-- Headless forceEvolve helper remains available for tests/external callers.
 ok = mod.exports.forceEvolve(game, original, { method = "EVOLVE_LEVEL", level = 16, into = "BAYLEEF" })
 check(ok, "force evolve failed")
 eq(game.save.party[1], original, "evolve keeps live reference")

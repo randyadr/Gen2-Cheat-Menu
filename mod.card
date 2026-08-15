@@ -1,5 +1,5 @@
 return {
-  summary = "Gold/Gen2 engine-level cheat menu backed by Game2 save state, Gen2 Pokemon/box/evolution code, World warps, and shared runtime hooks.",
+  summary = "Gold/Gen2 engine-level cheat menu with user-entered GameShark codes, Game2 save bridges, Gen2 Pokemon/box/evolution code, World warps, and runtime hooks.",
   author = "ChatGPT / OpenAI",
   contact = "https://github.com/randyadr/Gen2-Cheat-Menu",
   tags = { "ui", "tool", "cheats", "gen2", "gold", "pokemon", "battle", "quality-of-life" },
@@ -11,7 +11,7 @@ return {
       "Pokedex completion writes seen/caught, the actual Gold Pokedex stores",
       "Pokemon creation uses src.battle.gen2.Mon.new and Mon.stampOT",
       "PC Pokemon use Gold's 14 boxes of 20",
-      "forced evolution uses src.core.gen2.Evolution.apply and markPokedex",
+      "forced evolution uses Gold's native Gen2EvolutionAnim screen and commits through src.core.gen2.Evolution.apply",
       "teleports use the live Gold World warpToSpawn/flyTo paths",
       "item quantities write Gold's live flat inventory; PackMenu assigns pockets from item attributes",
       "walk-through-walls resolves the persistent game.world player used by Gold",
@@ -21,13 +21,16 @@ return {
       "all Johto and Kanto badges in one engine-level action",
       "all registered Gold Poke Ball pocket items in the ALL BALLS action",
       "Sun Stone in the evolution-stone item group",
+      "persistent custom GameShark code manager with an in-game hex editor",
+      "continuous 01VVLLHH writes bridged into Gold money, coins, badges, bag pockets, TM/HM data, Pokedex bytes, and sparse VM WRAM",
     },
     known = {
       "runtime battle/movement toggles reset after a fresh launch",
-      "forced evolution is instant from the cheat menu; the resulting Pokemon record is built by Gold's evolution engine",
+      "forced evolution plays Gold's native evolution animation, is non-cancelable, and writes the result through Gold's evolution engine",
       "Safari refill and the old Gen1 flashLit shortcut were removed because Gold does not consume those Gen1 state fields",
       "persistent save mutations are written when the game is saved normally",
       "battle cheats are intended for single-player use and the manifest marks the mod as link-affecting",
+      "Gen1Recomp is not a Game Boy CPU emulator, so arbitrary hardware/CPU-address GameShark codes cannot all have a high-level engine equivalent",
     },
   },
   credits = {

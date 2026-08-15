@@ -23,6 +23,9 @@ local SCREEN_POKEDEX_TOOLS = "Gen2CheatPokedexTools"
 local SCREEN_BATTLE_TOOLS = "Gen2CheatBattleTools"
 local SCREEN_QUANTITY = "Gen2CheatQuantity"
 local SCREEN_ITEM_PICKER = "Gen2CheatItemPicker"
+local SCREEN_GAMESHARK = "Gen2CheatGameShark"
+local SCREEN_GAMESHARK_ENTRY = "Gen2CheatGameSharkEntry"
+local SCREEN_GAMESHARK_DETAIL = "Gen2CheatGameSharkDetail"
 
 return function(mod)
   -- Gold engine modules. The manifest requests engine_internals so these are
@@ -240,6 +243,444 @@ return function(mod)
       and type(def) == "table"
       and type(def.id) == "string"
       and def.id == id
+  end
+
+  -- ---------- GameShark compatibility
+  -- Gen1Recomp is a high-level reimplementation, not a Game Boy emulator, so
+  -- there is no universal 64 KB memory array to poke. Gold does retain a
+  -- sparse WRAM compatibility store for readmem/writemem scripts, though, and
+  -- the live save/world objects expose the important cartridge variables.
+  -- We parse the standard 8-digit GB/C GameShark write form 01VVLLHH, bridge
+  -- known Gold WRAM addresses into live engine state, and mirror other WRAM
+  -- writes into the VM's sparse memory so script reads observe them.
+
+  local GS_SAVE_KEY = "gamesharkCodes"
+  local GS_HEX = "0123456789ABCDEF"
+  local gsVolatileCodes = {}
+  local gsCustomBridges = {}
+
+  local JOHTO_BADGES = {
+    "ZEPHYR", "HIVE", "PLAIN", "FOG", "MINERAL", "STORM", "GLACIER", "RISING",
+  }
+  local KANTO_BADGES = {
+    "BOULDER", "CASCADE", "THUNDER", "RAINBOW", "SOUL", "MARSH", "VOLCANO", "EARTH",
+  }
+
+  local function normalizeGameSharkCode(text)
+    local code = tostring(text or ""):upper():gsub("[^0-9A-F]", "")
+    if #code ~= 8 then return nil, "8 HEX DIGITS" end
+    return code
+  end
+
+  local function parseGameSharkCode(text)
+    local code, err = normalizeGameSharkCode(text)
+    if not code then return nil, err end
+    local codeType = code:sub(1, 2)
+    if codeType ~= "01" then
+      return nil, "ONLY 01 WRITE CODES"
+    end
+    local value = tonumber(code:sub(3, 4), 16)
+    -- GameShark stores the address bytes low then high: 01 VV LL HH.
+    local address = tonumber(code:sub(7, 8) .. code:sub(5, 6), 16)
+    if value == nil or address == nil then return nil, "BAD CODE" end
+    return { code = code, type = codeType, value = value, address = address }
+  end
+
+  local function readGsCodes()
+    local raw = gsVolatileCodes
+    if mod.save and type(mod.save.get) == "function" then
+      local ok, stored = pcall(mod.save.get, mod.save, GS_SAVE_KEY, {})
+      if ok and type(stored) == "table" then raw = stored end
+    end
+    local out = {}
+    for _, row in ipairs(raw or {}) do
+      local parsed = type(row) == "table" and parseGameSharkCode(row.code) or nil
+      if parsed then
+        out[#out + 1] = { code = parsed.code, enabled = row.enabled ~= false }
+      end
+    end
+    gsVolatileCodes = out
+    return out
+  end
+
+  local function saveGsCodes(rows)
+    local clean = {}
+    for _, row in ipairs(rows or {}) do
+      local parsed = type(row) == "table" and parseGameSharkCode(row.code) or nil
+      if parsed then
+        clean[#clean + 1] = { code = parsed.code, enabled = row.enabled ~= false }
+      end
+    end
+    gsVolatileCodes = clean
+    if mod.save and type(mod.save.set) == "function" then
+      pcall(mod.save.set, mod.save, GS_SAVE_KEY, clean)
+    end
+    return clean
+  end
+
+  local function itemDef(game, id)
+    local def = game and game.data and game.data.items and game.data.items[id]
+    if type(def) ~= "table" then def = registryGet(mod.content.items, id) end
+    return type(def) == "table" and def or nil
+  end
+
+  local function itemByIndex(game, index)
+    index = tonumber(index)
+    if not index then return nil end
+    for id, def in mod.content.items:each() do
+      if isRealItemRecord(id, def) and tonumber(def.index) == index then return id end
+    end
+    local items = game and game.data and game.data.items
+    if type(items) == "table" then
+      for id, def in pairs(items) do
+        if type(def) == "table" and tonumber(def.index) == index then return id end
+      end
+    end
+    return nil
+  end
+
+  local function machineItem(game, prefix, number)
+    local want = string.format("%s%02d", prefix, number)
+    local direct = itemDef(game, want)
+    if direct then return want end
+    for id, def in mod.content.items:each() do
+      if isRealItemRecord(id, def) then
+        local idText = tostring(id):upper()
+        if idText == want or idText:match("^" .. prefix .. "0?" .. tostring(number) .. "$") then
+          return id
+        end
+        if tonumber(def.tmNumber) == number then
+          if prefix == "TM" and idText:find("TM", 1, true) == 1 then return id end
+          if prefix == "HM" and idText:find("HM", 1, true) == 1 then return id end
+        end
+      end
+    end
+    return nil
+  end
+
+  local function removeBagOrderId(save, id)
+    local order = type(save.bagOrder) == "table" and save.bagOrder or nil
+    if not order then return end
+    for i = #order, 1, -1 do
+      if order[i] == id then table.remove(order, i) end
+    end
+  end
+
+  local function rawInventoryCount(save, id, count)
+    if not (save and id) then return false end
+    count = math.floor(tonumber(count) or 0)
+    if count <= 0 then
+      save.inventory[id] = nil
+      removeBagOrderId(save, id)
+      return true
+    end
+    save.inventory[id] = math.max(1, math.min(99, count))
+    appendBagOrder(save, id)
+    return true
+  end
+
+  local function pocketOrder(game, save, pocket)
+    local out = {}
+    for _, id in ipairs(ensureBagOrder(save)) do
+      local def = itemDef(game, id)
+      if def and (def.pocket or "ITEM") == pocket and save.inventory[id] then
+        out[#out + 1] = id
+      end
+    end
+    return out
+  end
+
+  local function replacePocketSlot(game, save, pocket, slot, rawId, keyOnly)
+    local ids = pocketOrder(game, save, pocket)
+    local old = ids[slot]
+    if rawId == 0 or rawId == 0xFF then
+      if old then rawInventoryCount(save, old, 0) end
+      return true
+    end
+    local id = itemByIndex(game, rawId)
+    local def = id and itemDef(game, id)
+    if not (id and def and (def.pocket or "ITEM") == pocket) then return false end
+    local count = old and tonumber(save.inventory[old]) or 1
+    if old and old ~= id then rawInventoryCount(save, old, 0) end
+    rawInventoryCount(save, id, keyOnly and 1 or count)
+    -- Put a newly created slot at the requested relative position when possible.
+    local order = ensureBagOrder(save)
+    removeBagOrderId(save, id)
+    local insertAt = #order + 1
+    local seenPocket = 0
+    for i, oid in ipairs(order) do
+      local od = itemDef(game, oid)
+      if od and (od.pocket or "ITEM") == pocket then
+        seenPocket = seenPocket + 1
+        if seenPocket >= slot then insertAt = i break end
+      end
+    end
+    table.insert(order, insertAt, id)
+    return true
+  end
+
+  local function setPocketSlotQuantity(game, save, pocket, slot, value)
+    local ids = pocketOrder(game, save, pocket)
+    local id = ids[slot]
+    if not id then return false end
+    return rawInventoryCount(save, id, value)
+  end
+
+  local function intToBcdBytes(number, count)
+    local max = 10 ^ (count * 2) - 1
+    number = math.max(0, math.min(max, math.floor(tonumber(number) or 0)))
+    local text = string.format("%0" .. tostring(count * 2) .. "d", number)
+    local bytes = {}
+    for i = 1, count do
+      local a = tonumber(text:sub(i * 2 - 1, i * 2 - 1)) or 0
+      local b = tonumber(text:sub(i * 2, i * 2)) or 0
+      bytes[i] = a * 16 + b
+    end
+    return bytes
+  end
+
+  local function bcdBytesToInt(bytes)
+    local text = {}
+    for _, byte in ipairs(bytes) do
+      local hi, lo = math.floor(byte / 16), byte % 16
+      if hi > 9 or lo > 9 then return nil end
+      text[#text + 1] = tostring(hi)
+      text[#text + 1] = tostring(lo)
+    end
+    return tonumber(table.concat(text)) or 0
+  end
+
+  local function writeBcdField(current, base, address, count, value, cap)
+    local bytes = intToBcdBytes(current, count)
+    bytes[address - base + 1] = value
+    local result = bcdBytesToInt(bytes)
+    if result == nil then return nil end
+    if cap then result = math.min(cap, result) end
+    return result
+  end
+
+  local function writeBadgeByte(store, names, value)
+    for bit = 0, 7 do
+      store[names[bit + 1]] = math.floor(value / (2 ^ bit)) % 2 == 1
+    end
+  end
+
+  local function speciesByNumber(game, number)
+    number = tonumber(number)
+    if not number then return nil end
+    local pokemon = game and game.data and game.data.pokemon
+    if type(pokemon) == "table" then
+      for id, def in pairs(pokemon) do
+        if type(def) == "table"
+          and (tonumber(def.index) == number or tonumber(def.dex) == number
+            or tonumber(def.number) == number) then
+          return id
+        end
+      end
+    end
+    for id, def in mod.content.pokemon:each() do
+      if type(def) == "table"
+        and (tonumber(def.index) == number or tonumber(def.dex) == number
+          or tonumber(def.number) == number) then
+        return id
+      end
+    end
+    return nil
+  end
+
+  local function writeDexByte(game, store, base, address, value)
+    local byteIndex = address - base
+    for bit = 0, 7 do
+      local number = byteIndex * 8 + bit + 1
+      if number <= 251 then
+        local id = speciesByNumber(game, number)
+        if id then store[id] = math.floor(value / (2 ^ bit)) % 2 == 1 end
+      end
+    end
+  end
+
+  local function gameSharkAddressKind(address)
+    if address >= 0xD573 and address <= 0xD575 then return "MONEY" end
+    if address >= 0xD576 and address <= 0xD579 then return "MOM" end
+    if address >= 0xD57A and address <= 0xD57B then return "COINS" end
+    if address == 0xD57C or address == 0xD57D then return "BADGES" end
+    if address >= 0xD57E and address <= 0xD5B6 then return "TM/HM" end
+    if address >= 0xD5B8 and address <= 0xD5E0 then return "ITEM BAG" end
+    if address >= 0xD5E2 and address <= 0xD5FB then return "KEY ITEMS" end
+    if address >= 0xD5FD and address <= 0xD615 then return "BALLS" end
+    if address >= 0xDBE4 and address <= 0xDC23 then return "POKEDEX" end
+    if (address >= 0xC000 and address <= 0xDFFF)
+      or (address >= 0xFF80 and address <= 0xFFFE) then
+      return "VM WRAM"
+    end
+    return "UNSUPPORTED"
+  end
+
+  local function writeLiveGameSharkByte(game, address, value)
+    local save = ensureSave(game)
+    if not save then return false, "NO SAVE" end
+    value = math.max(0, math.min(255, math.floor(tonumber(value) or 0)))
+
+    local custom = gsCustomBridges[address]
+    if type(custom) == "function" then
+      local ok, handled, label = pcall(custom, game, value, address)
+      if ok and handled then return true, label or "CUSTOM" end
+    end
+
+    if address >= 0xD573 and address <= 0xD575 then
+      local result = writeBcdField(save.player.money or 0, 0xD573, address, 3, value, 999999)
+      if result == nil then return false, "BAD BCD" end
+      save.player.money = result
+      return true, "MONEY"
+    end
+    if address >= 0xD576 and address <= 0xD578 then
+      save.mom = type(save.mom) == "table" and save.mom or {}
+      local result = writeBcdField(save.mom.savedMoney or 0, 0xD576, address, 3, value, 999999)
+      if result == nil then return false, "BAD BCD" end
+      save.mom.savedMoney = result
+      return true, "MOM"
+    end
+    if address == 0xD579 then
+      save.mom = type(save.mom) == "table" and save.mom or {}
+      save.mom.savingMoney = value ~= 0
+      return true, "MOM FLAG"
+    end
+    if address >= 0xD57A and address <= 0xD57B then
+      local result = writeBcdField(save.player.coins or 0, 0xD57A, address, 2, value, 9999)
+      if result == nil then return false, "BAD BCD" end
+      save.player.coins = result
+      return true, "COINS"
+    end
+    if address == 0xD57C then
+      writeBadgeByte(save.player.badges, JOHTO_BADGES, value)
+      return true, "JOHTO BADGES"
+    end
+    if address == 0xD57D then
+      writeBadgeByte(save.player.kantoBadges, KANTO_BADGES, value)
+      return true, "KANTO BADGES"
+    end
+
+    if address >= 0xD57E and address <= 0xD5B6 then
+      local offset = address - 0xD57E
+      local prefix, number
+      if offset < 50 then prefix, number = "TM", offset + 1
+      else prefix, number = "HM", offset - 49 end
+      local id = machineItem(game, prefix, number)
+      if not id then return false, "NO " .. prefix end
+      rawInventoryCount(save, id, value)
+      return true, prefix .. string.format("%02d", number)
+    end
+
+    -- wItems: 20 (item id, quantity) pairs followed by a terminator.
+    if address >= 0xD5B8 and address <= 0xD5DF then
+      local offset = address - 0xD5B8
+      local slot = math.floor(offset / 2) + 1
+      if offset % 2 == 0 then
+        return replacePocketSlot(game, save, "ITEM", slot, value, false), "ITEM SLOT"
+      end
+      return setPocketSlotQuantity(game, save, "ITEM", slot, value), "ITEM QTY"
+    end
+    if address == 0xD5E0 then return true, "ITEM END" end
+
+    -- wKeyItems: one item id per slot followed by a terminator.
+    if address >= 0xD5E2 and address <= 0xD5FA then
+      local slot = address - 0xD5E2 + 1
+      return replacePocketSlot(game, save, "KEY_ITEM", slot, value, true), "KEY SLOT"
+    end
+    if address == 0xD5FB then return true, "KEY END" end
+
+    -- wBalls: 12 (item id, quantity) pairs followed by a terminator.
+    if address >= 0xD5FD and address <= 0xD614 then
+      local offset = address - 0xD5FD
+      local slot = math.floor(offset / 2) + 1
+      if offset % 2 == 0 then
+        return replacePocketSlot(game, save, "BALL", slot, value, false), "BALL SLOT"
+      end
+      return setPocketSlotQuantity(game, save, "BALL", slot, value), "BALL QTY"
+    end
+    if address == 0xD615 then return true, "BALL END" end
+
+    if address >= 0xDBE4 and address <= 0xDC03 then
+      writeDexByte(game, save.pokedex.caught, 0xDBE4, address, value)
+      return true, "DEX CAUGHT"
+    end
+    if address >= 0xDC04 and address <= 0xDC23 then
+      writeDexByte(game, save.pokedex.seen, 0xDC04, address, value)
+      return true, "DEX SEEN"
+    end
+
+    local world = worldOf(game)
+    local vm = world and world.vm
+    local isRam = (address >= 0xC000 and address <= 0xDFFF)
+      or (address >= 0xFF80 and address <= 0xFFFE)
+    if isRam then
+      local handled = false
+      if vm and type(vm.writeMemFn) == "function" then
+        local ok, result = pcall(vm.writeMemFn, address, value)
+        handled = ok and result == true
+      end
+      if not handled and vm and type(vm.mem) == "table" then vm.mem[address] = value end
+      if not handled then
+        save.scriptMem = type(save.scriptMem) == "table" and save.scriptMem or {}
+        save.scriptMem[address] = value
+      end
+      return true, handled and "WORLD WRAM" or "VM WRAM"
+    end
+    return false, "UNSUPPORTED"
+  end
+
+  local function applyGameSharkCode(game, text)
+    local parsed, err = parseGameSharkCode(text)
+    if not parsed then return false, err end
+    return writeLiveGameSharkByte(game, parsed.address, parsed.value)
+  end
+
+  local function applyEnabledGameSharkCodes(game)
+    if not game then return end
+    for _, row in ipairs(readGsCodes()) do
+      if row.enabled then applyGameSharkCode(game, row.code) end
+    end
+  end
+
+  local function addGameSharkCode(text, enabled)
+    local parsed, err = parseGameSharkCode(text)
+    if not parsed then return false, err end
+    local rows = readGsCodes()
+    for _, row in ipairs(rows) do
+      if row.code == parsed.code then
+        row.enabled = enabled ~= false
+        saveGsCodes(rows)
+        return true, "EXISTS"
+      end
+    end
+    rows[#rows + 1] = { code = parsed.code, enabled = enabled ~= false }
+    saveGsCodes(rows)
+    return true, "ADDED"
+  end
+
+  local function setGameSharkEnabled(index, enabled)
+    local rows = readGsCodes()
+    local row = rows[tonumber(index) or 0]
+    if not row then return false, "N/A" end
+    row.enabled = enabled and true or false
+    saveGsCodes(rows)
+    return true, row.enabled and "ON" or "OFF"
+  end
+
+  local function deleteGameSharkCode(index)
+    local rows = readGsCodes()
+    index = tonumber(index)
+    if not index or not rows[index] then return false, "N/A" end
+    table.remove(rows, index)
+    saveGsCodes(rows)
+    return true, "DELETED"
+  end
+
+  local function registerGameSharkBridge(address, handler)
+    address = tonumber(address)
+    if not address or type(handler) ~= "function" then return false end
+    gsCustomBridges[math.floor(address) % 0x10000] = handler
+    return true
   end
 
   local function speciesName(game, id)
@@ -515,6 +956,13 @@ return function(mod)
   mod.exports.toggleWalkThroughWalls = toggleWalkThroughWalls
   mod.exports.toggleTurboMovement = toggleTurboMovement
   mod.exports.setExpMultiplier = setExpMultiplier
+  mod.exports.parseGameSharkCode = parseGameSharkCode
+  mod.exports.applyGameSharkCode = applyGameSharkCode
+  mod.exports.addGameSharkCode = addGameSharkCode
+  mod.exports.setGameSharkEnabled = setGameSharkEnabled
+  mod.exports.deleteGameSharkCode = deleteGameSharkCode
+  mod.exports.listGameSharkCodes = readGsCodes
+  mod.exports.registerGameSharkBridge = registerGameSharkBridge
 
   -- ---------- UI helpers
 
@@ -570,7 +1018,9 @@ return function(mod)
     Gen2Mon.stampOT(save, evolved)
     Gen2Evolution.markPokedex(save, evolved.species)
     -- Preserve references held by an open party/PC menu: replace the live
-    -- record in place with the engine-built evolved record.
+    -- record in place with the engine-built evolved record. This helper stays
+    -- available for headless callers/tests; the visible cheat-menu action now
+    -- goes through Gold's native Gen2EvolutionAnim screen below.
     for key in pairs(mon) do mon[key] = nil end
     for key, value in pairs(evolved) do mon[key] = value end
     return true, speciesName(game, mon.species)
@@ -591,6 +1041,50 @@ return function(mod)
       game.stack:pop()
     end
   end
+
+  local function findMonLocation(game, mon)
+    local save = ensureSave(game)
+    if not (save and mon) then return nil end
+    for i, member in ipairs(save.party or {}) do
+      if member == mon then return save.party, i, "PARTY" end
+    end
+    local boxes = ensureBoxes(save)
+    for b = 1, BOX_COUNT do
+      for i, member in ipairs(boxes[b] or {}) do
+        if member == mon then return boxes[b], i, "BOX " .. tostring(b) end
+      end
+    end
+    return nil
+  end
+
+  local function startEvolutionAnimation(game, mon, evo)
+    local save = ensureSave(game)
+    local target = evolutionTarget(evo)
+    if not (save and mon and target) then return false, "N/A" end
+    local container, index = findMonLocation(game, mon)
+    if not (container and index) then return false, "NOT FOUND" end
+
+    -- Match Game2's own stone-evolution path: Gen2EvolutionAnim owns the
+    -- animation, applies Evolution.apply at the native commit frame, marks the
+    -- Pokedex, handles level-up moves, and writes the resulting record back to
+    -- the supplied live container/index. force=true makes this cheat-triggered
+    -- evolution non-cancelable, the same contract as a forced stone evolution.
+    mod.ui.push(game, "Gen2EvolutionAnim", {
+      mon = mon,
+      entry = evo,
+      index = index,
+      party = container,
+      save = save,
+      force = true,
+      onDone = function(result)
+        if game and game.stack and game.stack.pop then game.stack:pop() end
+        if result and result.evolved then closeEvolutionMenus(game) end
+      end,
+    })
+    return true, "EVOLVING"
+  end
+
+  mod.exports.startEvolutionAnimation = startEvolutionAnimation
 
   -- Native cheat-menu helper. Every cheat/category screen uses the recomp's
   -- public ListMenu so it keeps the same modern rendering, scrolling, sounds,
@@ -749,6 +1243,147 @@ return function(mod)
     end,
   })
 
+  local HexCodeEditor = {}
+  HexCodeEditor.__index = HexCodeEditor
+  HexCodeEditor.isOpaque = false
+
+  function HexCodeEditor.new(game, opts)
+    opts = opts or {}
+    local initial = normalizeGameSharkCode(opts.code or "01000000") or "01000000"
+    local digits = {}
+    for i = 1, 8 do digits[i] = initial:sub(i, i) end
+    return setmetatable({
+      game = game,
+      digits = digits,
+      cursor = math.max(1, math.min(8, tonumber(opts.cursor) or 3)),
+      onDone = opts.onDone,
+    }, HexCodeEditor)
+  end
+
+  local function hexDigitIndex(ch)
+    local pos = GS_HEX:find(tostring(ch or ""):upper(), 1, true)
+    return pos and (pos - 1) or 0
+  end
+
+  function HexCodeEditor:update(_dt)
+    local input = self.game and self.game.input
+    if not input then return end
+    if input:wasPressed("left") then
+      self.cursor = self.cursor > 1 and self.cursor - 1 or 8
+    elseif input:wasPressed("right") then
+      self.cursor = self.cursor < 8 and self.cursor + 1 or 1
+    elseif input:wasPressed("up") then
+      local n = (hexDigitIndex(self.digits[self.cursor]) + 1) % 16
+      self.digits[self.cursor] = GS_HEX:sub(n + 1, n + 1)
+    elseif input:wasPressed("down") then
+      local n = (hexDigitIndex(self.digits[self.cursor]) + 15) % 16
+      self.digits[self.cursor] = GS_HEX:sub(n + 1, n + 1)
+    elseif input:wasPressed("a") then
+      local code = table.concat(self.digits)
+      local parsed = parseGameSharkCode(code)
+      if parsed then
+        if self.game.stack and self.game.stack.pop then self.game.stack:pop() end
+        if self.onDone then self.onDone(parsed.code) end
+      else
+        self.error = "01 WRITE ONLY"
+      end
+    elseif input:wasPressed("b") then
+      if self.game.stack and self.game.stack.pop then self.game.stack:pop() end
+    end
+  end
+
+  function HexCodeEditor:draw()
+    local Font = mod.ui.Font
+    if not Font then return end
+    Font.drawBox(1, 4, 18, 7)
+    love.graphics.setColor(0, 0, 0, 1)
+    Font.draw("GAMESHARK CODE", 3 * 8, 5 * 8)
+    Font.draw(table.concat(self.digits, " "), 3 * 8, 7 * 8)
+    local caret = string.rep("  ", self.cursor - 1) .. "^"
+    Font.draw(caret, 3 * 8, 8 * 8)
+    Font.draw(self.error or "01VVLLHH", 5 * 8, 9 * 8)
+    Font.draw("D-PAD EDIT  A:OK B:BACK", 1 * 8, 12 * 8)
+    love.graphics.setColor(1, 1, 1, 1)
+  end
+
+  mod.content.screens:register(SCREEN_GAMESHARK_ENTRY, {
+    new = function(game)
+      return HexCodeEditor.new(game, {
+        onDone = function(code)
+          local ok = addGameSharkCode(code, true)
+          if ok then applyGameSharkCode(game, code) end
+        end,
+      })
+    end,
+  })
+
+  mod.content.screens:register(SCREEN_GAMESHARK_DETAIL, {
+    new = function(game, index)
+      local rows = readGsCodes()
+      local entry = rows[index]
+      if not entry then
+        return mod.ui.ListMenu.new(game, "GAMESHARK", {
+          { label = "CODE NO LONGER EXISTS", right = "N/A" },
+        }, { footer = "B: BACK" })
+      end
+      local parsed = parseGameSharkCode(entry.code)
+      local kind = parsed and gameSharkAddressKind(parsed.address) or "BAD"
+      local menuRows = {
+        { label = "CODE", right = entry.code },
+        { label = "TARGET", right = kind },
+        { label = "ENABLED", right = entry.enabled and "ON" or "OFF", value = "toggle" },
+        { label = "APPLY ONCE", right = "NOW", value = "apply" },
+        { label = "DELETE CODE", right = "X", value = "delete" },
+      }
+      return mod.ui.ListMenu.new(game, "GAMESHARK CODE", menuRows, {
+        wrap = true,
+        footer = "A: SELECT  B: BACK",
+        onChoose = function(item)
+          if not item or not item.value then return end
+          if item.value == "toggle" then
+            entry.enabled = not entry.enabled
+            local current = readGsCodes()
+            if current[index] then current[index].enabled = entry.enabled end
+            saveGsCodes(current)
+            item.right = entry.enabled and "ON" or "OFF"
+          elseif item.value == "apply" then
+            local ok, result = applyGameSharkCode(game, entry.code)
+            item.right = ok and tostring(result or "OK") or tostring(result or "ERR")
+          elseif item.value == "delete" then
+            deleteGameSharkCode(index)
+            if game.stack and game.stack.pop then game.stack:pop() end
+          end
+        end,
+      })
+    end,
+  })
+
+  mod.content.screens:register(SCREEN_GAMESHARK, {
+    new = function(game)
+      local rows = {
+        { label = "ADD CODE", right = "+", value = "add" },
+      }
+      for index, entry in ipairs(readGsCodes()) do
+        local parsed = parseGameSharkCode(entry.code)
+        rows[#rows + 1] = {
+          label = entry.code,
+          right = entry.enabled and "ON" or "OFF",
+          value = index,
+          kind = parsed and gameSharkAddressKind(parsed.address) or "BAD",
+        }
+      end
+      return mod.ui.ListMenu.new(game, "GAMESHARK CODES", rows, {
+        wrap = true, pageJump = true, keyRepeat = true,
+        footer = "A: OPEN  B: BACK",
+        onChoose = function(item)
+          if not item then return end
+          if item.value == "add" then push(game, SCREEN_GAMESHARK_ENTRY)
+          elseif type(item.value) == "number" then push(game, SCREEN_GAMESHARK_DETAIL, item.value) end
+        end,
+      })
+    end,
+  })
+
   mod.content.screens:register(SCREEN_POKEMON, {
     new = function(game)
       local rows = speciesRows(game)
@@ -890,9 +1525,8 @@ return function(mod)
         onChoose = function(item)
           local evo = item and item.value
           if not evolutionTarget(evo) then return end
-          local ok, result = forceEvolve(game, mon, evo)
-          item.right = ok and "DONE" or tostring(result or "ERR")
-          if ok then closeEvolutionMenus(game) end
+          local ok, result = startEvolutionAnimation(game, mon, evo)
+          item.right = ok and "EVOLVING" or tostring(result or "ERR")
         end,
       })
     end,
@@ -1066,12 +1700,23 @@ return function(mod)
         { label = "PLAYER", nav = SCREEN_PLAYER_TOOLS },
         { label = "ITEMS", nav = SCREEN_ITEM_TOOLS },
         { label = "POKEDEX", nav = SCREEN_POKEDEX_TOOLS },
+        { label = "GAMESHARK", nav = SCREEN_GAMESHARK },
       }
       return newNativeCheatMenu(game, "CHEAT MENU", items, "A: OPEN  B: BACK")
     end,
   })
 
   -- ---------- public runtime cheat hooks
+
+  -- Game2 invokes input.step once per fixed logic tick before gameplay input.
+  -- Re-apply enabled codes there, matching a real GameShark's continuous RAM
+  -- write behavior closely enough for the high-level recomp architecture.
+  mod.hooks:wrap("input.step", function(next, game, dt)
+    local a, b, c = next(game, dt)
+    liveGame = game or liveGame
+    applyEnabledGameSharkCodes(game or liveGame)
+    return a, b, c
+  end, 9000)
 
   mod.hooks:wrap("encounter.roll", function(next, encDef, ctx)
     if session.noWild then return nil end
