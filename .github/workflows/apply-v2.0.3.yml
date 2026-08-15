@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - ".update/READY"
+      - ".update/chunk-03b"
 
 permissions:
   contents: write
@@ -22,7 +22,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cat .update/chunk-* | base64 -d > /tmp/gen2-cheat-v203.tar.gz
+          cat .update/chunk-00 .update/chunk-01 .update/chunk-02 .update/chunk-03a .update/chunk-03b | base64 -d > /tmp/gen2-cheat-v203.tar.gz
           tar -xzf /tmp/gen2-cheat-v203.tar.gz -C .
           rm -rf .update
           rm -f .github/workflows/apply-v2.0.3.yml
