@@ -1,0 +1,33 @@
+name: Apply v2.0.3 source update
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".update/READY"
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply tested v2.0.3 payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .update/chunk-* | base64 -d > /tmp/gen2-cheat-v203.tar.gz
+          tar -xzf /tmp/gen2-cheat-v203.tar.gz -C .
+          rm -rf .update
+          rm -f .github/workflows/apply-v2.0.3.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "v2.0.3 native evolution animation"
+          git push origin HEAD:main
